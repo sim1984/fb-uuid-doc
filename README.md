@@ -1,2 +1,1 @@
-# fb-uuid-doc
-Использование UUID в Firebird
+# Использование UUID в Firebird
