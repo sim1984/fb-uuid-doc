@@ -1,7 +1,7 @@
 [[fb-uuid]]
 = Использование UUID в Firebird
 Симонов Денис
-v1.0 от 05.06.2026
+v1.0 от 09.06.2026
 :doctype: article
 :sectnums:
 :sectanchors:
@@ -84,6 +84,11 @@ CREATE TABLE T (
 );
 ----
 
+[IMPORTANT]
+====
+Некоторые пользователи хранят UUID в человеко читаемой форме в столбцах типа `CHAR(36) CHARACTER SET ASCII`. Хотелось бы отметить, что в таком виде UUID занимает на 20 байт больше (это не так уж существенно). Но самая большая проблема в индексах построенных на таких полях, их ключи занимают существенно больше места, что может приводить к большей глубине индекса, поэтому рекомендуем строить ключи и индексы только на столбцах UUID хранимых в бинарной форме. Подробнее о индексации UUID будет написано ниже.
+====
+
 == Генерация UUID
 
 RFC 9562 определяет несколько версий UUID. Каждая версия имеет свои требования к генерации новых значений UUID и имеет свои преимущества и недостатки. Значение UUID может быть генерировано как на стороне приложения, так и на стороне СУБД.
@@ -145,6 +150,625 @@ UUID к соответствующему 16-ти байтовому значен
 SELECT CHAR_TO_UUID('A0bF4E45-3029-2a44-D493-4998c9b439A3') FROM rdb$database;
 ----
 
+== Индексация столбцов типа UUID
+
+Теперь настало время поговорить об индексах для столбцов хранящих UUID. Как известно индексы создаются автоматически для первичного, альтернативного (уникального) и внешнего ключа. Сравним размер и эффективность индексов для полей хранящих UUID различных типов и индексов на числовые поля.
+
+Первичный ключ с числовым типом обычно связан с генератором (последовательностью), а потому значения таких ключей является монотонно возрастающим.
+
+Первичные ключи с типом UUID могут быт как монотонно возрастающими, так и случайными в зависимости от версии UUID.
+
+Для UUID версии 4 значения ключей распределено случайным образом, поэтому для таких ключей не имеет смысл выполнять любые предикаты кроме равенства, неравенства (`<>`), `IS [NOT] NULL` и `IS [NOT] DISTINCT`. Также не имеет смысла пытаться упорядочить выборку по полю содержащему UUID версии 4, а это обозначает, что для таких полей нет никакой разницы между `ASCENDING` и `DESCENDING` индексом. Для генерации UUID версии 4 в Firebird есть встроенная функция `GEN_UUID()`.
+
+Для UUID версии 7 значения ключей являются частично упорядоченными и монотонно возрастающими в пределах одного сервера. Для таких ключей в некоторых случаях могут иметь смысл предикаты `&lt;` и `&gt;`, а также сортировка по таким ключам. В Firebird до версии 6.0 нет встроенных функций для генерации UUID версии 7, однако вы можете получать такие идентификаторы из приложения или написать свою внешнюю функцию (UDR). Начиная с Firebird 6.0 для генерации UUID версии 7 вы можете использовать встроенную функцию `GEN_UUID()` передав в неё в качестве параметра значение 7.
+
+Я решил сделать небольшой тест для демонстрации размеров индексов и их эффективности для различных типов ключей. Я буду выполнять тесты на снапшоте Firebird 6.0, поскольку он имеет встроенную функцию для генерации UUID версии 7. Для UUID версии 4 и для числового ключа между Firebird 6.0 и 5.0 нет никакой разницы.
+
+[source,sql]
+----
+create table test (
+  id bigint not null,
+  uuid_v4 binary(16) not null,
+  uuid_v4s char(36) character set ascii not null,
+  uuid_v7 binary(16) not null,
+  uuid_v7s char(36) character set ascii not null
+);
+
+insert into test(id, uuid_v4, uuid_v4s, uuid_v7, uuid_v7s)
+with
+  t as (
+    select
+      n,
+      gen_uuid() as uuid_4,
+      gen_uuid(7) as uuid_7
+    from generate_series (1, 1000000) as S(n)
+
+    union all
+    -- для материализации столбцов полученных через gen_uuid
+    select null, null, null
+    from rdb$database
+    where false
+  )
+select
+  n,
+  uuid_4,
+  uuid_to_char(uuid_4) as uuid_4s,
+  uuid_7,
+  uuid_to_char(uuid_7) as uuid_7s
+from t;
+
+commit;
+----
+
+=== Время создания индексов
+
+Теперь создадим уникальные ASCENDING индексы для всех полей. Тест будет выполнятся в `isql` с включенным режимом AUTODLL, поэтому время `COMMIT` входит во время выполнение команды создания индекса.
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_ID ON TEST(ID);
+----
+
+----
+Elapsed time = 0.774 sec
+Buffers = 16384
+Reads = 20904
+Writes = 1498
+Fetches = 1090049
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V4 ON TEST(UUID_V4);
+----
+
+----
+Elapsed time = 1.070 sec
+Buffers = 16384
+Reads = 20861
+Writes = 2498
+Fetches = 1088963
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V4S ON TEST(UUID_V4S);
+----
+
+----
+Elapsed time = 1.358 sec
+Buffers = 16384
+Reads = 20879
+Writes = 4731
+Fetches = 1093429
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V7 ON TEST(UUID_V7);
+----
+
+----
+Elapsed time = 0.993 sec
+Buffers = 16384
+Reads = 20879
+Writes = 1878
+Fetches = 1087729
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V7S ON TEST(UUID_V7S);
+----
+
+----
+Elapsed time = 1.131 sec
+Buffers = 16384
+Reads = 20879
+Writes = 3233
+Fetches = 1090439
+----
+
+Сравнивая время создания индексов и количество записанных страниц (Writes) уже можно сделать некоторые выводы. Быстрее всего создаются индексы для многотонно возрастающих числовых ключей, следом идут индексы для UUID версии 7 хранимые в бинарном виде, затем - UUID версии 4 хранимые в бинарном виде. Медленнее всего создаются индексы для хранения UUID в человеко-читаемом виде, они же требуют записать почти в 2 раза больше страниц на диск, что косвенно говорит о том, что эти индексы менее компактные.
+
+=== Тест поиска по ключу
+
+Попробуем сравнить производительность поиска на равенство по этим ключам. Поскольку поиск одного значения занимает очень мало времени мы сделаем так чтобы значение по ключу искалось 100000 раз.
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_id bigint = 500000;
+begin
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where id = :find_id
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Current memory = 145600160
+Delta memory = 34624
+Max memory = 257117936
+Elapsed time = 0.253 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 500017
+----
+
+Теперь будем искать ключ типа UUID версии 4 в бинарном виде:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v4 binary(16);
+begin
+  find_uuid_v4 = CHAR_TO_UUID('4D1EB968-3CA5-41F5-A519-2FAF15A79EFA');
+
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v4 = :find_uuid_v4
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Current memory = 145939808
+Delta memory = 36288
+Max memory = 257117936
+Elapsed time = 0.267 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 500012
+----
+
+Повторим этот тест но, будем делать поиск по ключу UUID версии 4 в символьном виде:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v4s char(36) character set ascii = '4D1EB968-3CA5-41F5-A519-2FAF15A79EFA';
+begin
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v4s = :find_uuid_v4s
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Current memory = 146041696
+Delta memory = 37280
+Max memory = 257117936
+Elapsed time = 0.278 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 500029
+----
+
+Теперь будем искать ключ типа UUID версии 7 в бинарном виде:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v7 binary(16);
+begin
+  find_uuid_v7 = CHAR_TO_UUID('019EAC8E-77AE-7076-BFB1-0805300BC670');
+
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v7 = :find_uuid_v7
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Current memory = 146115296
+Delta memory = 464
+Max memory = 257117936
+Elapsed time = 0.272 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 500000
+----
+
+И наконец сделаем поиск по ключу UUID версии 7 в символьном виде:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v7s char(36) character set ascii = '019EAC8E-77AE-7076-BFB1-0805300BC670';
+begin
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v7s = :find_uuid_v7s
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Current memory = 146187712
+Delta memory = 464
+Max memory = 257117936
+Elapsed time = 0.283 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 500000
+----
+
+В данном тесте разница между различными типами ключа незначительна. Причина будет объяснена позднее.
+
+=== Тест поиск первого значения по ключу
+
+Если у вас используется монотонно возрастающий числовой идентификатор, то очевидно, что чем меньше значение ключа, тем раньше была создана запись (в пределах одного сервера). Поэтому следующий запрос имеет смысл:
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by id
+fetch first row only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+                    1 4488D022-40B2-4CAC-A3FE-DA983BF5DCE1 019EAC8E-6D28-754D-9029-84C131947DEF
+
+Current memory = 146418288
+Delta memory = 208
+Max memory = 257117936
+Elapsed time = 0.001 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 5
+----
+
+Этот запрос выполняется практически мгновенно.
+
+Поскольку ключи UUID версии 4 не являются монотонно возрастающими, то подобный запрос не имеет смысла, но мы выполним его для оценки производительности.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by uuid_v4
+fetch first row only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+               574504 000005C9-F71F-4435-A9D4-FB0F9F232753 019EAC8E-7946-71F1-82B9-396AA08C773D
+
+Current memory = 146455920
+Delta memory = 224
+Max memory = 257117936
+Elapsed time = 0.002 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 5
+----
+
+Запрос выполняется быстро, но не имеет практического смысла. Мы получили какую-то запись из середины таблицы.
+
+Ключи UUID версии 7 являются частично упорядоченными и монотонно возрастающими в пределах текущего сервера. Такой запрос всё ещё не имеет смысла, потому что в UUID версии 7 присутствует случайная составляющая, но она проявляется не так как для UUID версии 4.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by uuid_v7
+fetch first row only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+                   27 45682B35-DB42-47B8-91ED-A3B245809576 019EAC8E-6D28-705C-AB23-6A7FACBB40F1
+
+Current memory = 146498592
+Delta memory = 224
+Max memory = 257117936
+Elapsed time = 0.001 sec
+Buffers = 16384
+Reads = 0
+Writes = 0
+Fetches = 5
+----
+
+Этот запрос вернул какую-то запись из начала таблицы, а не из середины как UUID версии 4.
+
+=== Сравнение полной навигации по индексу
+
+Предыдущие запросы выполнялись максимально быстро, потому что просто искали первый ключ, но что если будет выполняться  Index Full Scan?
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by id
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Current memory = 147112896
+Delta memory = 224
+Max memory = 257117936
+Elapsed time = 0.620 sec
+Buffers = 16384
+Reads = 22337
+Writes = 0
+Fetches = 2022324
+----
+
+Теперь выполним этот тест для UUID версии 4 хранимого в бинарном виде.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v4
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Current memory = 147932832
+Delta memory = 224
+Max memory = 257117936
+Elapsed time = 3.434 sec
+Buffers = 16384
+Reads = 228207
+Writes = 0
+Fetches = 3000249
+----
+
+Здесь видно, что полное сканирование по ключам индекса для ключей UUID версии 4 хранимого в бинарном виде намного медленнее, чем для монотонно возрастающих числовых ключей.
+
+Теперь повторим этот тест для UUID версии 4 хранимого в текстовом виде.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v4s
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Current memory = 147822432
+Delta memory = -930112
+Max memory = 257117936
+Elapsed time = 3.394 sec
+Buffers = 16384
+Reads = 233802
+Writes = 0
+Fetches = 3002462
+----
+
+Время выполнения осталось приблизительно тем же, но увеличилось количество физических чтений.
+
+Теперь выполним этот тест для UUID версии 7 хранимого в бинарном виде.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v7
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Current memory = 147631952
+Delta memory = 0
+Max memory = 257117936
+Elapsed time = 0.714 sec
+Buffers = 16384
+Reads = 22715
+Writes = 0
+Fetches = 2022702
+----
+
+Полное сканирование по ключам индекса для ключей UUID версии 7 хранимого в бинарном виде намного быстрее, чем для ключей UUID версии 4, и практически сравнимо с полным сканированием по ключам монотонно возрастающего индекса по числовому столбцу.
+
+Теперь повторим этот тест для UUID версии 7 хранимого в текстовом виде.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v7s
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Current memory = 148261408
+Delta memory = 224
+Max memory = 257117936
+Elapsed time = 0.755 sec
+Buffers = 16384
+Reads = 24059
+Writes = 0
+Fetches = 2024046
+----
+
+Время выполнения осталось приблизительно тем же, но увеличилось количество физических чтений.
+
+=== DESCENDING индексы
+
+Как говорилось выше для монотонно возрастающих числовых идентификаторов имеет смысл создавать DESCENDING индекс, если вы хотите получать что-то вроде последних добавленных записей (в пределах одного сервера). Для ключей типа UUID версии 4 это не имеет смысла, но мы всё же продемонстрируем как работают UUID с такими индексами.
+
+[source,sql]
+----
+CREATE UNIQUE DESC INDEX IDX_TEST_ID_DESC ON TEST(ID);
+----
+
+----
+Elapsed time = 0.743 sec
+Buffers = 16384
+Reads = 6712
+Writes = 1507
+Fetches = 1086791
+----
+
+[source,sql]
+----
+CREATE UNIQUE DESC INDEX IDX_TEST_UUID_V4_DESC ON TEST(UUID_V4);
+----
+
+----
+Elapsed time = 0.956 sec
+Buffers = 16384
+Reads = 6691
+Writes = 2500
+Fetches = 1088841
+----
+
+[source,sql]
+----
+CREATE UNIQUE DESC INDEX IDX_TEST_UUID_V7_DESC ON TEST(UUID_V7);
+----
+
+----
+Elapsed time = 0.910 sec
+Buffers = 16384
+Reads = 7012
+Writes = 1888
+Fetches = 1087604
+----
+
+Я не стал создавать DESCENDING индексы для UUID хранимых в текстовом виде, тут картина будет примерно такая же как для ASCENDING индексов.
+
+Итак, выполним следующий запрос для получения 5 последних добавленных записей.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by id desc
+fetch first 5 rows only;
+----
+
+// TODO: Написать
+
+=== Сравнение статистики
+
+// TODO: Написать
+
 == Заключение
 
 Firebird позволяет работать с универсальными уникальными идентификаторами (UUID), добавлять новый тип в ядро Firebird не требуется. Для хранения UUID используйте тип данных `BINARY(16)`. Вы можете создать домен с именем `UUID` и использовать его при определении столбцов таблиц или параметров хранимых процедур. UUID может быть генерирован как на стороне приложения, так и на сервере Firebird. Для генерации UUID на стороне Firebird используется функция `GEN_UUID()`, которая генерирует UUID версии 4. Для преобразования UUID в человеко-читаемую форму вы можете воспользоваться встроенной функцией `UUID_TO_CHAR()`. Для преобразования UUID из символьной формы в бинарную вы можете воспользоваться функцией `CHAR_TO_UUID()`.
+
+
