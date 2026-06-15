@@ -1003,7 +1003,7 @@ Fetches = 2
 Теперь посмотрим на статистику индексов для различных типов ключей.
 
 ----
-    Index "PUBLIC"."IDX_TEST_ID" (1)
+    Index "IDX_TEST_ID" (1)
         Root page: 11316, depth: 2, leaf buckets: 741, nodes: 1000000
         Average node length: 11.99, total dup: 0, max dup: 0
         Average key length: 9.04, compression ratio: 1.00
@@ -1016,7 +1016,7 @@ Fetches = 2
             60 - 79% = 0
             80 - 99% = 740
 
-    Index "PUBLIC"."IDX_TEST_ID_DESC" (0)
+    Index "IDX_TEST_ID_DESC" (0)
         Root page: 4093, depth: 2, leaf buckets: 741, nodes: 1000000
         Average node length: 11.99, total dup: 0, max dup: 0
         Average key length: 9.04, compression ratio: 1.00
@@ -1029,7 +1029,7 @@ Fetches = 2
             60 - 79% = 0
             80 - 99% = 740
 
-    Index "PUBLIC"."IDX_TEST_UUID_V4" (2)
+    Index "IDX_TEST_UUID_V4" (2)
         Root page: 12760, depth: 3, leaf buckets: 1236, nodes: 1000000
         Average node length: 19.98, total dup: 0, max dup: 0
         Average key length: 17.03, compression ratio: 0.94
@@ -1042,7 +1042,7 @@ Fetches = 2
             60 - 79% = 1
             80 - 99% = 1235
 
-    Index "PUBLIC"."IDX_TEST_UUID_V4S" (3)
+    Index "IDX_TEST_UUID_V4S" (3)
         Root page: 13685, depth: 3, leaf buckets: 2332, nodes: 1000000
         Average node length: 37.64, total dup: 0, max dup: 0
         Average key length: 34.69, compression ratio: 1.04
@@ -1055,7 +1055,7 @@ Fetches = 2
             60 - 79% = 1
             80 - 99% = 2331
 
-    Index "PUBLIC"."IDX_TEST_UUID_V4_DESC" (6)
+    Index "IDX_TEST_UUID_V4_DESC" (6)
         Root page: 18841, depth: 3, leaf buckets: 1236, nodes: 1000000
         Average node length: 19.98, total dup: 0, max dup: 0
         Average key length: 17.03, compression ratio: 0.94
@@ -1068,7 +1068,7 @@ Fetches = 2
             60 - 79% = 1
             80 - 99% = 1235
 
-    Index "PUBLIC"."IDX_TEST_UUID_V7" (4)
+    Index "IDX_TEST_UUID_V7" (4)
         Root page: 16489, depth: 3, leaf buckets: 929, nodes: 1000000
         Average node length: 15.01, total dup: 0, max dup: 0
         Average key length: 12.06, compression ratio: 1.33
@@ -1081,7 +1081,7 @@ Fetches = 2
             60 - 79% = 0
             80 - 99% = 928
 
-    Index "PUBLIC"."IDX_TEST_UUID_V7S" (5)
+    Index "IDX_TEST_UUID_V7S" (5)
         Root page: 17062, depth: 3, leaf buckets: 1593, nodes: 1000000
         Average node length: 25.70, total dup: 0, max dup: 0
         Average key length: 22.75, compression ratio: 1.58
@@ -1094,7 +1094,7 @@ Fetches = 2
             60 - 79% = 0
             80 - 99% = 1592
 
-    Index "PUBLIC"."IDX_TEST_UUID_V7_DESC" (7)
+    Index "IDX_TEST_UUID_V7_DESC" (7)
         Root page: 20218, depth: 3, leaf buckets: 929, nodes: 1000000
         Average node length: 15.01, total dup: 0, max dup: 0
         Average key length: 12.06, compression ratio: 1.41
