@@ -1,0 +1,1178 @@
+[[fb-uuid]]
+= Verwendung von UUID in Firebird
+Denis Simonov
+v1.1 vom 22.06.2026
+:doctype: article
+:sectnums:
+:sectanchors:
+:toc: left
+:toclevels: 4
+:outlinelevels: 6:0
+:icons: font
+:experimental:
+:lang: de
+:imagesdir: images
+:toc-title: Inhaltsverzeichnis
+:chapter-label: Kapitel
+:example-caption: Beispiel
+:figure-caption: Abbildung
+:table-caption: Tabelle
+:note-caption: Hinweis
+:caution-caption: Achtung
+:important-caption: Wichtig
+:warning-caption: Warnung
+:version-label: Version
+:source-highlighter: coderay
+ifdef::backend-pdf[]
+:pdf-fontsdir: theme/fonts
+:pdf-themesdir: theme/firebird-pdf
+:pdf-theme: firebird
+:source-highlighter: pygments
+endif::[]
+ifdef::backend-html5[]
+:stylesdir: theme/firebird-html
+:stylesheet: firebird.css
+:source-highlighter: highlight.js
+endif::[]
+
+[dedication%notitle]
+--
+Dieses Material wurde mit Unterstützung und Sponsoring der Firma https://www.ib-aid.com[ib-aid.com] erstellt, die Firebird-SQL-Tools für Unternehmen entwickelt und technischen Support für Firebird SQL anbietet.
+
+Das Material wird unter der Public Documentation License https://www.firebirdsql.org/file/documentation/html/en/licenses/pdl/public-documentation-license.html veröffentlicht.
+--
+
+toc::[]
+
+[preface]
+== Vorwort
+
+Einige Firebird-Benutzer haben den Wunsch geäußert, dass Firebird einen neuen Datentyp `UUID` ähnlich wie PostgreSQL erhält. Also lassen Sie uns herausfinden, was UUID ist, wie man damit in Firebird arbeitet und ob dafür ein separater Datentyp benötigt wird.
+
+== Was ist UUID?
+
+UUID (Universally Unique Identifiers) ist ein universeller eindeutiger Bezeichner, der in https://datatracker.ietf.org/doc/html/rfc9562[RFC 9562], ISO/IEC 9834-8:2005 und verwandten Standards definiert ist. (In einigen Systemen wird es GUID, global eindeutige Kennung, genannt.) Dieser Bezeichner ist ein 128-Bit-Wert, der von einem speziellen Algorithmus generiert wird und praktisch garantiert, dass er von demselben Algorithmus nirgendwo sonst auf der Welt noch einmal erzeugt wird. Somit sind diese Bezeichner nicht nur in einer einzelnen Datenbank eindeutig, wie die Werte von Sequenzgeneratoren, sondern auch in verteilten Systemen.
+
+=== UUID Version 4
+
+Diese Version wird unter Verwendung eines kryptografisch sicheren Pseudozufallszahlengenerators (CSPRNG) generiert, um 122 der 128 Bits zu füllen. Die verbleibenden 6 Bits sind reserviert: 4 Bits kodieren die Version (0100), 2 Bits kodieren die Variante (10).
+
+Einige Berechnungen zur Kollisionswahrscheinlichkeit:
+
+* Um eine Kollisionswahrscheinlichkeit von etwa 50 % zu erreichen, müssen etwa 2,71 Billiarden UUID v4 generiert werden.
+* Bei einer Generierungsrate von 1 Milliarde UUID pro Sekunde würde es etwa 86 Jahre dauern, um diese Menge zu erreichen.
+
+In der Praxis treten Kollisionen von UUID v4 praktisch nicht auf. Es ist jedoch wichtig zu bedenken, dass die Wahrscheinlichkeit nicht Null ist und dass es im Laufe der Zeit bei ausreichend intensiver Nutzung zu einer Kollision kommen kann.
+
+Auf einem einzelnen Rechner hängt die Kollisionswahrscheinlichkeit von der Qualität des Zufallszahlengenerators und der Generierungshäufigkeit ab. Wenn der Generator nicht genügend Entropie aufweist oder eine Korrelation zwischen den Generatoren auf verschiedenen Knoten besteht, kann die Kollisionswahrscheinlichkeit steigen.
+
+Auf verschiedenen Rechnern bei Verwendung unabhängiger Generatoren ist die Kollisionswahrscheinlichkeit ebenfalls extrem gering, sofern die Generatoren auf allen Knoten korrekt arbeiten und über ausreichend Entropie verfügen. Wenn jedoch auf verschiedenen Rechnern derselbe Generierungsalgorithmus verwendet wird, kann dies das Kollisionsrisiko erhöhen, wenn die Generatoren korrelieren.
+
+=== UUID Version 7
+
+Diese Version wurde in RFC 9562 (2024) standardisiert. Sie enthält einen 48-Bit-Unix-Zeitstempel (in Millisekunden) in den höchstwertigen Bits, gefolgt von Versionsbits, 12 zufälligen Bits, Variantenbits und weiteren 62 zufälligen Bits. Die gesamte Zufälligkeit beträgt 74 Bit.
+
+Kollisionswahrscheinlichkeit für UUID v7:
+
+* Innerhalb einer einzigen Millisekunde beträgt die Kollisionswahrscheinlichkeit bei der Generierung von einer Million IDs in diesem Intervall etwa 10^-10^.
+* Insgesamt, unter Berücksichtigung des Raums möglicher Werte (2^74^ = 1,9 × 10^22^ pro Millisekunde), bleibt die Wahrscheinlichkeit einer zufälligen Kollision zwischen zwei UUID v7-Werten extrem gering, selbst bei paralleler Generierung auf vielen Knoten.
+
+Der Standard erlaubt es Implementierungen, einen zusätzlichen monotonen Zähler in den zufälligen Bits zu verwenden, um die Ordnung bei der Generierung mehrerer UUIDs innerhalb derselben Millisekunde zu gewährleisten.
+
+Auf einem einzelnen Rechner hängt die Kollisionswahrscheinlichkeit auf einem Knoten von der Qualität des Zufallszahlengenerators, der Genauigkeit der Systemuhr und anderen Faktoren ab. Wenn der Generator ausreichend zuverlässig ist, ist die Kollisionswahrscheinlichkeit gering.
+Auf verschiedenen Rechnern erfordert die verteilte Generierung von UUID v7 ebenfalls keine Koordination, sofern jeder Knoten über einen ausreichend guten Zufallsgenerator und relativ korrekte Uhren verfügt. Allerdings können falsche Systemuhren die Generierungsreihenfolge von UUID v7 beeinträchtigen.
+
+== Wie speichert man UUID?
+
+Wie bereits erwähnt, ist eine UUID ein 128-Bit-eindeutiger Wert, daher werden 16 Bytes für die Speicherung benötigt. Firebird hat keinen speziellen Datentyp für die Speicherung von UUID, aber Sie können ihn einfach als Byte-Array mit dem Datentyp `BINARY(16)` speichern. Wenn Sie möchten, dass Ihre Tabellendefinitionen wie bei PostgreSQL aussehen, erstellen Sie einfach einen Domain mit dem Namen `UUID`.
+
+[source,sql]
+----
+CREATE DOMAIN UUID AS BINARY(16);
+----
+
+Vor Firebird 4.0 gab es keinen speziellen Typ `BINARY` für die Speicherung binärer Daten; dennoch konnten Sie binäre Daten fester Länge in einer Spalte vom Typ `CHAR(N)` mit dem Zeichensatz `OCTETS` speichern. Daher muss die Domain `UUID` in früheren Versionen wie folgt deklariert werden:
+
+[source,sql]
+----
+CREATE DOMAIN UUID AS CHAR(16) CHARACTER SET OCTETS;
+----
+
+[NOTE]
+====
+Mir sind derzeit keine Pläne bekannt, Firebird einen separaten UUID-Typ hinzuzufügen oder ihn zu einem Schlüsselwort zu machen. Dennoch können Sie einige Vorsichtsmaßnahmen treffen, z. B. die Domain nicht `UUID`, sondern `D_UUID` nennen, um nicht versehentlich die Kompatibilität mit zukünftigen Firebird-Versionen zu brechen, falls sich dies ändert.
+====
+
+Jetzt können Sie die Domain `UUID` als Datentyp für eindeutige Bezeichner verwenden:
+
+[source,sql]
+----
+CREATE TABLE T (
+   ID UUID NOT NULL,
+   NAME VARCHAR(30) NOT NULL,
+   ...
+   CONSTRAINT PK_T_ID PRIMARY KEY (ID)
+);
+----
+
+[IMPORTANT]
+====
+Einige Benutzer speichern UUIDs in menschenlesbarer Form in Spalten vom Typ `CHAR(36) CHARACTER SET ASCII`. Es sollte beachtet werden, dass eine UUID in dieser Form 20 Bytes mehr belegt (das ist nicht so bedeutend). Das größte Problem sind jedoch Indizes, die auf solchen Spalten aufgebaut sind – ihre Schlüssel benötigen deutlich mehr Platz, was zu einer größeren Index-Tiefe führen kann. Daher empfehlen wir, Schlüssel und Indizes nur auf UUID-Spalten zu erstellen, die in binärer Form gespeichert werden. Mehr zur Indizierung von UUID wird weiter unten beschrieben.
+====
+
+== Generierung von UUID Version 4
+
+RFC 9562 definiert mehrere Versionen von UUID. Jede Version hat ihre eigenen Anforderungen an die Generierung neuer UUID-Werte und ihre eigenen Vor- und Nachteile. Ein UUID-Wert kann sowohl auf der Anwendungsseite als auch auf der DBMS-Seite generiert werden.
+
+Firebird verfügt über die eingebaute Funktion `GEN_UUID()`, die UUID Version 4 generiert.
+
+Das Einfügen eines neuen Datensatzes in eine Tabelle unter Verwendung der Funktion `GEN_UUID()` sieht wie folgt aus:
+
+[source,sql]
+----
+INSERT INTO T (ID, NAME, ...)
+VALUES (GEN_UUID(), ?, ...)
+RETURNING ID
+----
+
+Wenn Sie nicht jedes Mal `GEN_UUID()` in Ihren Abfragen schreiben möchten, können Sie einen `BEFORE INSERT`-Trigger erstellen, der das Feld `ID` befüllt, falls es in der Abfrage nicht angegeben ist.
+
+[source,sql]
+----
+CREATE OR ALTER TRIGGER TR_T_BI FOR T
+ACTIVE BEFORE INSERT POSITION 0
+AS
+BEGIN
+  IF (NEW.ID IS NULL) THEN
+    NEW.ID = GEN_UUID();
+END
+----
+
+[IMPORTANT]
+====
+Leider ist es nicht zulässig, die Funktion `GEN_UUID()` als Standardwert für das Feld `ID` anzugeben.
+====
+
+== Generierung von UUID Version 7
+
+In Firebird 6.0 kann die Funktion `GEN_UUID()` einen Parameter akzeptieren, der die Version des UUID-Generierungsalgorithmus angibt. Gültige Versionswerte sind 4 und 7. Wenn das Argument nicht angegeben wird, wird UUID Version 4 generiert.
+
+Firebird 6.0 befindet sich jedoch noch in der Entwicklung, und viele Benutzer möchten bereits jetzt die Vorteile von UUID Version 7 in den aktuellen Versionen Firebird 5.0, 4.0 oder 3.0 nutzen. Für solche Benutzer haben wir eine UDR-Funktion geschrieben, die UUID Version 7 generiert.
+
+Diese Bibliothek ist kostenlos und wird mit dem Quellcode bereitgestellt: https://github.com/IBSurgeon/uuid_v7_udr
+
+Führen Sie nach der Installation der UDR das Skript zur Registrierung der UDR-Funktion aus.
+
+[source,sql]
+----
+CREATE FUNCTION GEN_UUID_V7 ()
+RETURNS BINARY(16)
+EXTERNAL NAME 'uuid_v7!gen_uuid_v7'
+ENGINE UDR;
+----
+
+Jetzt können Sie UUID Version 7 in Firebird 5.0–3.0 generieren.
+
+[source,sql]
+----
+SELECT GEN_UUID_V7() AS UUID_V7 FROM RDB$DATABASE;
+----
+
+In Firebird 6.0 können Sie UUID Version 7 ohne Verwendung von UDR generieren.
+
+[source,sql]
+----
+SELECT GEN_UUID(7) AS UUID_V7 FROM RDB$DATABASE;
+----
+
+== Anzeige von UUID in menschenlesbarer Form
+
+Die Funktion `GEN_UUID()` gibt einen universellen eindeutigen Bezeichner (UUID) als 16-Byte-Binärzeichenfolge zurück. Die Anzeige eines solchen Bezeichners in menschenlesbarer Form kann der Client-Anwendung überlassen werden. Wenn Sie jedoch eine UUID in eine Zeichenfolge konvertieren müssen, bietet Firebird die Funktion `UUID_TO_CHAR()`.
+
+Beispiele für die Verwendung von `UUID_TO_CHAR()`:
+
+[source,sql]
+----
+select uuid_to_char(gen_uuid()) from rdb$database;
+-- A4D82B77-BFF8-4D05-BF28-16A24B6ACE2C
+
+select uuid_to_char(id) as s_uuid from t;
+-- A4D82B77-BFF8-4D05-BF28-16A24B6ACE2C
+----
+
+Es gibt auch die umgekehrte Funktion `CHAR_TO_UUID()`, die eine lesbare 36-stellige UUID-Zeichenfolge in den entsprechenden 16-Byte-UUID-Wert konvertiert.
+
+[source,sql]
+----
+SELECT CHAR_TO_UUID('A0bF4E45-3029-2a44-D493-4998c9b439A3') FROM rdb$database;
+----
+
+== Indizierung von UUID-Spalten
+
+Jetzt ist es an der Zeit, über Indizes für Spalten zu sprechen, die UUIDs speichern. Bekanntlich werden Indizes automatisch für Primär-, Alternativ- (eindeutige) und Fremdschlüssel erstellt. Vergleichen wir die Größe und Effizienz von Indizes für UUID-Spalten verschiedener Speichertypen und Indizes auf numerischen Spalten.
+
+Ein Primärschlüssel mit numerischem Typ ist normalerweise mit einem Generator (Sequenz) verbunden, und daher sind die Werte solcher Schlüssel monoton steigend.
+
+Primärschlüssel mit UUID-Typ können je nach UUID-Version entweder monoton steigend oder zufällig sein.
+
+Bei UUID Version 4 sind die Schlüsselwerte zufällig verteilt, daher ist es für solche Schlüssel nicht sinnvoll, andere Prädikate als Gleichheit, Ungleichheit (`<>`), `IS [NOT] NULL` und `IS [NOT] DISTINCT` zu verwenden. Es macht auch keinen Sinn, zu versuchen, eine Ergebnismenge nach einer Spalte zu ordnen, die UUID Version 4 enthält, was bedeutet, dass es für solche Spalten keinen Unterschied zwischen `ASCENDING`- und `DESCENDING`-Indizes gibt. Firebird verfügt über die eingebaute Funktion `GEN_UUID()` zur Generierung von UUID Version 4.
+
+Bei UUID Version 7 sind die Schlüsselwerte teilweise geordnet und innerhalb eines einzelnen Servers monoton steigend. Für solche Schlüssel können in einigen Fällen Prädikate wie `&lt;` und `&gt;` sowie die Sortierung nach solchen Schlüsseln sinnvoll sein. Firebird bis Version 6.0 hat keine eingebauten Funktionen zur Generierung von UUID Version 7, aber Sie können solche Bezeichner aus der Anwendung heraus oder durch eigene externe Funktionen (UDR) erhalten. Ab Firebird 6.0 können Sie die eingebaute Funktion `GEN_UUID()` verwenden, um UUID Version 7 zu generieren, indem Sie 7 als Argument übergeben.
+
+Ich habe beschlossen, einen kleinen Test durchzuführen, um die Indexgrößen und die Effizienz für verschiedene Schlüsseltypen zu demonstrieren. Ich werde die Tests auf einer Snapshot-Version von Firebird 6.0 durchführen, da diese eine eingebaute Funktion zur Generierung von UUID Version 7 besitzt. Für UUID Version 4 und für numerische Schlüssel gibt es zwischen Firebird 6.0 und 5.0 keinen Unterschied.
+
+[source,sql]
+----
+create table test (
+  id bigint not null,
+  uuid_v4 binary(16) not null,
+  uuid_v4s char(36) character set ascii not null,
+  uuid_v7 binary(16) not null,
+  uuid_v7s char(36) character set ascii not null
+);
+
+insert into test(id, uuid_v4, uuid_v4s, uuid_v7, uuid_v7s)
+with
+  t as (
+    select
+      n,
+      gen_uuid() as uuid_4,
+      gen_uuid(7) as uuid_7
+    from generate_series (1, 1000000) as S(n)
+
+    union all
+    -- zur Materialisierung der über gen_uuid erhaltenen Spalten
+    select null, null, null
+    from rdb$database
+    where false
+  )
+select
+  n,
+  uuid_4,
+  uuid_to_char(uuid_4) as uuid_4s,
+  uuid_7,
+  uuid_to_char(uuid_7) as uuid_7s
+from t;
+
+commit;
+----
+
+=== Zeit zur Indexerstellung
+
+Jetzt erstellen wir eindeutige ASCENDING-Indizes für alle Spalten. Der Test wird in `isql` mit aktiviertem AUTODDL-Modus ausgeführt, daher ist die Zeit von `COMMIT` in der Ausführungszeit des Indexerstellungsbefehls enthalten.
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_ID ON TEST(ID);
+----
+
+----
+Elapsed time = 0.912 sec
+Buffers = 51200
+Reads = 0
+Writes = 761
+Fetches = 1043284
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V4 ON TEST(UUID_V4);
+----
+
+----
+Elapsed time = 1.319 sec
+Buffers = 51200
+Reads = 1
+Writes = 1257
+Fetches = 1043989
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V4S ON TEST(UUID_V4S);
+----
+
+----
+Elapsed time = 2.141 sec
+Buffers = 51200
+Reads = 0
+Writes = 2356
+Fetches = 1046191
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V7 ON TEST(UUID_V7);
+----
+
+----
+Elapsed time = 1.172 sec
+Buffers = 51200
+Reads = 0
+Writes = 950
+Fetches = 1043377
+----
+
+[source,sql]
+----
+CREATE UNIQUE INDEX IDX_TEST_UUID_V7S ON TEST(UUID_V7S);
+----
+
+----
+Elapsed time = 1.470 sec
+Buffers = 51200
+Reads = 0
+Writes = 1614
+Fetches = 1044709
+----
+
+Beim Vergleich der Indexerstellungszeiten und der Anzahl der geschriebenen Seiten (Writes) können wir bereits einige Schlussfolgerungen ziehen. Am schnellsten werden Indizes für monoton steigende numerische Schlüssel erstellt, gefolgt von Indizes für UUID Version 7, die in binärer Form gespeichert werden, dann UUID Version 4 in binärer Form. Am langsamsten werden Indizes für UUID in menschenlesbarer Form erstellt; sie erfordern auch fast doppelt so viele Schreibvorgänge auf die Festplatte, was indirekt darauf hindeutet, dass diese Indizes weniger kompakt sind.
+
+=== Test der Schlüsselsuche
+
+Vergleichen wir die Leistung der Gleichheitssuche auf diesen Schlüsseln. Da die Suche nach einem einzelnen Wert sehr wenig Zeit in Anspruch nimmt, werden wir dafür sorgen, dass die Suche nach einem Schlüsselwert 100.000 Mal durchgeführt wird.
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_id bigint = 500000;
+begin
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where id = :find_id
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Elapsed time = 0.266 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 400000
+----
+
+Jetzt suchen wir nach einem UUID Version 4-Schlüssel in binärer Form:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v4 binary(16);
+begin
+  find_uuid_v4 = CHAR_TO_UUID('4D1EB968-3CA5-41F5-A519-2FAF15A79EFA');
+
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v4 = :find_uuid_v4
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Elapsed time = 0.256 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 400000
+----
+
+Wiederholen Sie diesen Test, aber suchen Sie nun nach dem UUID Version 4-Schlüssel in Zeichenform:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v4s char(36) character set ascii = '4D1EB968-3CA5-41F5-A519-2FAF15A79EFA';
+begin
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v4s = :find_uuid_v4s
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Elapsed time = 0.272 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 400000
+----
+
+Jetzt suchen wir nach einem UUID Version 7-Schlüssel in binärer Form:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v7 binary(16);
+begin
+  find_uuid_v7 = CHAR_TO_UUID('019EAC8E-77AE-7076-BFB1-0805300BC670');
+
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v7 = :find_uuid_v7
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Elapsed time = 0.168 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 400012
+----
+
+Schließlich suchen wir nach einem UUID Version 7-Schlüssel in Zeichenform:
+
+[source,sql]
+----
+execute block
+returns (n bigint)
+as
+  declare i int = 0;
+  declare find_uuid_v7s char(36) character set ascii = '019EAC8E-77AE-7076-BFB1-0805300BC670';
+begin
+  while (i < 100000) do
+  begin
+    i = i + 1;
+
+    select count(*)
+    from test
+    where uuid_v7s = :find_uuid_v7s
+    into n;
+  end
+  suspend;
+end
+----
+
+----
+                    N
+=====================
+                    1
+
+Elapsed time = 0.175 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 400012
+----
+
+In diesem Test ist der Unterschied zwischen den verschiedenen Schlüsseltypen unbedeutend. Der Grund wird später erläutert.
+
+=== Test zum Abrufen des ersten Werts per Schlüssel
+
+Wenn Sie einen monoton steigenden numerischen Bezeichner verwenden, ist es offensichtlich, dass der Datensatz umso früher erstellt wurde, je kleiner der Schlüsselwert ist (innerhalb eines einzigen Servers). Daher ergibt die folgende Abfrage Sinn:
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by id
+fetch first row only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+                    1 4488D022-40B2-4CAC-A3FE-DA983BF5DCE1 019EAC8E-6D28-754D-9029-84C131947DEF
+
+Elapsed time = 0.002 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 4
+----
+
+Diese Abfrage wird nahezu augenblicklich ausgeführt.
+
+Da UUID Version 4-Schlüssel nicht monoton steigend sind, ergibt eine solche Abfrage keinen Sinn, aber wir führen sie zur Leistungsbewertung dennoch durch.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by uuid_v4
+fetch first row only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+               574504 000005C9-F71F-4435-A9D4-FB0F9F232753 019EAC8E-7946-71F1-82B9-396AA08C773D
+
+Elapsed time = 0.002 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 5
+----
+
+Die Abfrage wird schnell ausgeführt, hat aber keine praktische Bedeutung. Wir haben einen zufälligen Datensatz aus der Mitte der Tabelle erhalten.
+
+UUID Version 7-Schlüssel sind teilweise geordnet und innerhalb des aktuellen Servers monoton steigend. Eine solche Abfrage ist dennoch nicht sinnvoll, da UUID Version 7 eine zufällige Komponente enthält, die sich jedoch nicht so äußert wie bei UUID Version 4.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by uuid_v7
+fetch first row only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+                   27 45682B35-DB42-47B8-91ED-A3B245809576 019EAC8E-6D28-705C-AB23-6A7FACBB40F1
+
+Elapsed time = 0.002 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 5
+----
+
+Diese Abfrage gab einen Datensatz vom Anfang der Tabelle zurück, nicht aus der Mitte wie bei UUID Version 4.
+
+=== Vergleich der vollständigen Indexnavigation
+
+Die vorherigen Abfragen wurden so schnell wie möglich ausgeführt, da sie nur nach dem ersten Schlüssel suchten. Aber was, wenn ein Index Full Scan durchgeführt wird?
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by id
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Elapsed time = 0.472 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 2011053
+----
+
+Jetzt führen wir diesen Test für UUID Version 4, gespeichert in binärer Form, durch.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v4
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Elapsed time = 1.186 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 2996687
+----
+
+Hier ist zu erkennen, dass eine vollständige Indexscan über die Indexschlüssel für UUID Version 4 in binärer Form viel langsamer ist als für monoton steigende numerische Schlüssel.
+
+Jetzt wiederholen wir diesen Test für UUID Version 4, gespeichert in Textform.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v4s
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Elapsed time = 1.243 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 2997783
+----
+
+Die Ausführungszeit blieb annähernd gleich, aber die Anzahl der physischen Lesevorgänge stieg an.
+
+Jetzt führen wir diesen Test für UUID Version 7, gespeichert in binärer Form, durch.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v7
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Elapsed time = 0.570 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 2011242
+----
+
+Ein vollständiger Indexscan über die Indexschlüssel für UUID Version 7 in binärer Form ist viel schneller als für UUID Version 4 und praktisch vergleichbar mit einem vollständigen Scan über die Schlüssel eines monoton steigenden Index auf einer numerischen Spalte.
+
+Jetzt wiederholen wir diesen Test für UUID Version 7, gespeichert in Textform.
+
+[source,sql]
+----
+select count(*)
+from (
+  select
+    id, UUID_V4S, UUID_V7S
+  from test
+  order by uuid_v7s
+);
+----
+
+----
+                COUNT
+=====================
+              1000000
+
+Elapsed time = 0.587 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 2011906
+----
+
+Die Ausführungszeit blieb annähernd gleich, aber die Anzahl der physischen Lesevorgänge stieg an.
+
+=== DESCENDING-Indizes
+
+Wie oben erwähnt, ist es bei monoton steigenden numerischen Bezeichnern sinnvoll, einen DESCENDING-Index zu erstellen, wenn Sie so etwas wie die zuletzt hinzugefügten Datensätze erhalten möchten (innerhalb eines Servers). Für UUID Version 4-Schlüssel ergibt das keinen Sinn, aber wir werden dennoch demonstrieren, wie UUIDs mit solchen Indizes funktionieren.
+
+[source,sql]
+----
+CREATE UNIQUE DESC INDEX IDX_TEST_ID_DESC ON TEST(ID);
+----
+
+----
+Elapsed time = 0.863 sec
+Buffers = 51200
+Reads = 0
+Writes = 760
+Fetches = 1044718
+----
+
+[source,sql]
+----
+CREATE UNIQUE DESC INDEX IDX_TEST_UUID_V4_DESC ON TEST(UUID_V4);
+----
+
+----
+Elapsed time = 1.442 sec
+Buffers = 51200
+Reads = 0
+Writes = 1255
+Fetches = 1043993
+----
+
+[source,sql]
+----
+CREATE UNIQUE DESC INDEX IDX_TEST_UUID_V7_DESC ON TEST(UUID_V7);
+----
+
+----
+Elapsed time = 1.144 sec
+Buffers = 51200
+Reads = 0
+Writes = 948
+Fetches = 1043380
+----
+
+Ich habe keine DESCENDING-Indizes für UUIDs erstellt, die in Textform gespeichert werden; das Bild dort wird etwa das gleiche sein wie bei ASCENDING-Indizes.
+
+Führen wir also die folgende Abfrage aus, um die 5 zuletzt hinzugefügten Datensätze zu erhalten.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by id desc
+fetch first 5 rows only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+              1000000 71180161-A8BF-46EB-B62B-FF00D4F6DB2C 019ECA02-7471-7329-AA81-AE366DD5146B
+               999999 4EFFB2DE-5CE2-4C5D-8BD1-BB168B5A0CED 019ECA02-7471-77E9-8D44-D6DC369B9674
+               999998 FE694C51-DF96-4CC3-95CF-C989DCD3AE43 019ECA02-7471-795C-8274-74EE5715AD34
+               999997 37AF0083-0D4D-412B-9FEF-D1E160D548A9 019ECA02-7471-7EBC-8472-659390764AD5
+               999996 DFE2C353-F27D-4EF3-964C-D1FBE80406E9 019ECA02-7471-7BD2-8896-B1011B4C17DF
+
+Elapsed time = 0.004 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 24
+----
+
+Die Abfrage wird schnell ausgeführt und die Ausgabe entspricht den Erwartungen – sie gibt die 5 zuletzt hinzugefügten Datensätze zurück.
+
+Führen wir eine ähnliche Abfrage für einen UUID Version 4-Schlüssel durch.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by UUID_V4 desc
+fetch first 5 rows only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+               729466 FFFFFC2F-E706-40AC-9E46-26FC50E2C5C5 019ECA02-6EB3-76F7-B20C-3D0A4E9F4565
+               191645 FFFFF897-DA23-4480-822D-0B949B05766B 019ECA02-6392-7409-A07D-9B817634F643
+               468619 FFFFDF10-A187-4FEA-929C-61F4AD42A4ED 019ECA02-69BB-7F70-8443-B444A9FBF5BB
+               147745 FFFFDB65-17CA-412A-A5B2-D07ACA857911 019ECA02-62BB-7883-9C5F-B3422354FECC
+                44583 FFFF9D89-BC3B-447B-B424-2A4F49EFE80D 019ECA02-60BF-79D3-9DDB-66AC3B6C4B96
+
+Elapsed time = 0.004 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 30
+----
+
+Die Abfrage wurde schnell ausgeführt, aber wir erhielten als Ergebnis einen zufälligen Satz von Zeilen. Daraus folgt: Die Richtung des Index für UUID Version 4-Schlüssel spielt überhaupt keine Rolle, da wir kein sinnvolles Ergebnis aus der Sortierung nach einem solchen Schlüssel erhalten können.
+
+Führen wir eine ähnliche Abfrage für einen UUID Version 7-Schlüssel durch.
+
+[source,sql]
+----
+select
+  id, UUID_V4S, UUID_V7S
+from test
+order by UUID_V7 desc
+fetch first 5 rows only;
+----
+
+----
+                   ID UUID_V4S                             UUID_V7S
+===================== ==================================== ====================================
+               999984 3C67C2F0-D16A-477A-893E-605AA5EBA180 019ECA02-7471-7FE9-B944-57411F3C2B1B
+               999997 37AF0083-0D4D-412B-9FEF-D1E160D548A9 019ECA02-7471-7EBC-8472-659390764AD5
+               999981 3C3DC5B6-3631-4696-B452-2F7393C010D3 019ECA02-7471-7E85-B5EB-129BCC0EF65F
+               999975 6B619B12-EB5B-4B2A-B045-262754B3B480 019ECA02-7471-7CD4-93D6-453B2DB102BF
+               999976 DC1FB864-58D6-465B-8863-250157775E90 019ECA02-7471-7CC2-9D85-B2310914DB35
+
+Elapsed time = 0.004 sec
+Buffers = 51200
+Reads = 0
+Writes = 0
+Fetches = 25
+----
+
+Die Abfrage wurde schnell ausgeführt. Als Ergebnis erhielten wir 5 zufällige, kürzlich hinzugefügte Datensätze. Das ist wahrscheinlich nicht genau das, was wir wollten, obwohl ein solches Ergebnis in einigen Fällen nützlich sein kann. Wenn Sie ein solches Ergebnis benötigen, kann es also sinnvoll sein, die Indexrichtung für solche Schlüssel zu wählen.
+
+=== Test der Masseneinfügung
+
+An dieser Stelle wollte ich bereits zur Gegenüberstellung der Indexstatistiken übergehen und ein Fazit ziehen, aber mir wurde gesagt, dass sich diese Schlüssel bei einem Test mit Masseneinfügungen sehr unterschiedlich verhalten, also habe ich mich entschlossen, einen weiteren Test hinzuzufügen.
+
+In diesem Test vergleichen wir Einfügungen in eine Tabelle, die nur aus einer Spalte besteht, nämlich dem Primärschlüssel. Für jeden Schlüsseltyp wird eine separate Tabelle verwendet. In diesem Test messen wir sowohl die Zeit der `insert .. select`-Anweisung selbst als auch die Zeit für das Transaktions-Commit, da garantiert ist, dass alle Seiten nach dem Einfügen der Datensätze erst nach dem `COMMIT` geschrieben werden.
+
+==== Einfügen von BIGINT-Schlüsseln
+
+[source,sql]
+----
+create table test_bigint (
+  id bigint not null,
+  constraint pk_test_bigint primary key(id)
+);
+----
+
+[source,sql]
+----
+insert into test_bigint (id)
+select n
+from generate_series(1, 1000000) as s(n);
+----
+
+----
+Elapsed time = 6.172 sec
+Buffers = 51200
+Reads = 0
+Writes = 2208
+Fetches = 5026174
+----
+
+[source,sql]
+----
+commit;
+----
+
+----
+Elapsed time = 1.620 sec
+Buffers = 51200
+Reads = 0
+Writes = 3920
+Fetches = 2
+----
+
+==== Einfügen von UUID v4-Schlüsseln
+
+[source,sql]
+----
+create table test_uuid_v4 (
+  id binary(16) not null,
+  constraint pk_test_uuid_v4 primary key(id)
+);
+----
+
+[source,sql]
+----
+insert into test_uuid_v4 (id)
+select gen_uuid()
+from generate_series(1, 1000000) as s(n);
+----
+
+----
+Elapsed time = 12.014 sec
+Buffers = 51200
+Reads = 0
+Writes = 5425
+Fetches = 5641769
+----
+
+[source,sql]
+----
+commit;
+----
+
+----
+Elapsed time = 0.635 sec
+Buffers = 51200
+Reads = 0
+Writes = 5956
+Fetches = 2
+----
+
+==== Einfügen von UUID v4-Schlüsseln in Zeichenfolgendarstellung
+
+[source,sql]
+----
+create table test_uuid_v4s (
+  id char(36) character set ascii not null,
+  constraint pk_test_uuid_v4s primary key(id)
+);
+----
+
+[source,sql]
+----
+insert into test_uuid_v4s (id)
+select uuid_to_char(gen_uuid())
+from generate_series(1, 1000000) as s(n);
+----
+
+----
+Elapsed time = 12.454 sec
+Buffers = 51200
+Reads = 0
+Writes = 10397
+Fetches = 5936384
+----
+
+[source,sql]
+----
+commit;
+----
+
+----
+Elapsed time = 0.885 sec
+Buffers = 51200
+Reads = 0
+Writes = 8835
+Fetches = 2
+----
+
+==== Einfügen von UUID v7-Schlüsseln
+
+[source,sql]
+----
+create table test_uuid_v7 (
+  id binary(16) not null,
+  constraint pk_test_uuid_v7 primary key(id)
+);
+----
+
+[source,sql]
+----
+insert into test_uuid_v7 (id)
+select gen_uuid(7)
+from generate_series(1, 1000000) as s(n);
+----
+
+----
+Elapsed time = 7.389 sec
+Buffers = 51200
+Reads = 0
+Writes = 5109
+Fetches = 5542995
+----
+
+[source,sql]
+----
+commit;
+----
+
+----
+Elapsed time = 0.421 sec
+Buffers = 51200
+Reads = 0
+Writes = 4161
+Fetches = 2
+----
+
+==== Einfügen von UUID v7-Schlüsseln in Zeichenfolgendarstellung
+
+[source,sql]
+----
+create table test_uuid_v7s (
+  id char(36) character set ascii not null,
+  constraint pk_test_uuid_v7s primary key(id)
+);
+----
+
+[source,sql]
+----
+insert into test_uuid_v7s (id)
+select uuid_to_char(gen_uuid(7))
+from generate_series(1, 1000000) as s(n);
+----
+
+----
+Elapsed time = 10.070 sec
+Buffers = 51200
+Reads = 0
+Writes = 8931
+Fetches = 5871645
+----
+
+[source,sql]
+----
+commit;
+----
+
+----
+Elapsed time = 0.541 sec
+Buffers = 51200
+Reads = 1
+Writes = 5395
+Fetches = 2
+----
+
+==== Vergleich der Ergebnisse des Masseneinfügungstests
+
+Aus den Ergebnissen des Masseneinfügungstests geht hervor, dass die schnellsten Einfügungen bei BIGINT-Schlüsseln auftreten. Es zeigt sich auch eine interessante Besonderheit: Ein beträchtlicher Teil der Arbeit bleibt dem Commit selbst überlassen. Bei UUID-Schlüsseln ist das Einfügen langsamer, aber es bleibt weniger Arbeit zum Zeitpunkt des Commits. Dies könnte daran liegen, dass die Schlüsselerzeugung nicht kostenlos ist, d. h. ein Teil der Zeit für die Ausführung der Funktion `gen_uuid()` aufgewendet wird. UUID Version 7 ist etwa 1,5-mal schneller als UUID Version 4. Die Speicherung von UUID in binärer Form führt zu schnellerem Einfügen und weniger Seitenänderungen.
+
+=== Statistikvergleich
+
+Werfen wir nun einen Blick auf die Indexstatistiken für die verschiedenen Schlüsseltypen.
+
+----
+    Index "IDX_TEST_ID" (1)
+        Root page: 11316, depth: 2, leaf buckets: 741, nodes: 1000000
+        Average node length: 11.99, total dup: 0, max dup: 0
+        Average key length: 9.04, compression ratio: 1.00
+        Average prefix length: 2.96, average data length: 6.04
+        Clustering factor: 10310, ratio: 0.01
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 1
+            40 - 59% = 0
+            60 - 79% = 0
+            80 - 99% = 740
+
+    Index "IDX_TEST_ID_DESC" (0)
+        Root page: 4093, depth: 2, leaf buckets: 741, nodes: 1000000
+        Average node length: 11.99, total dup: 0, max dup: 0
+        Average key length: 9.04, compression ratio: 1.00
+        Average prefix length: 2.96, average data length: 6.04
+        Clustering factor: 10310, ratio: 0.01
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 1
+            40 - 59% = 0
+            60 - 79% = 0
+            80 - 99% = 740
+
+    Index "IDX_TEST_UUID_V4" (2)
+        Root page: 12760, depth: 3, leaf buckets: 1236, nodes: 1000000
+        Average node length: 19.98, total dup: 0, max dup: 0
+        Average key length: 17.03, compression ratio: 0.94
+        Average prefix length: 1.96, average data length: 14.03
+        Clustering factor: 999891, ratio: 1.00
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 0
+            40 - 59% = 0
+            60 - 79% = 1
+            80 - 99% = 1235
+
+    Index "IDX_TEST_UUID_V4S" (3)
+        Root page: 13685, depth: 3, leaf buckets: 2332, nodes: 1000000
+        Average node length: 37.64, total dup: 0, max dup: 0
+        Average key length: 34.69, compression ratio: 1.04
+        Average prefix length: 4.31, average data length: 31.69
+        Clustering factor: 999891, ratio: 1.00
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 0
+            40 - 59% = 0
+            60 - 79% = 1
+            80 - 99% = 2331
+
+    Index "IDX_TEST_UUID_V4_DESC" (6)
+        Root page: 18841, depth: 3, leaf buckets: 1236, nodes: 1000000
+        Average node length: 19.98, total dup: 0, max dup: 0
+        Average key length: 17.03, compression ratio: 0.94
+        Average prefix length: 1.97, average data length: 14.03
+        Clustering factor: 999891, ratio: 1.00
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 0
+            40 - 59% = 0
+            60 - 79% = 1
+            80 - 99% = 1235
+
+    Index "IDX_TEST_UUID_V7" (4)
+        Root page: 16489, depth: 3, leaf buckets: 929, nodes: 1000000
+        Average node length: 15.01, total dup: 0, max dup: 0
+        Average key length: 12.06, compression ratio: 1.33
+        Average prefix length: 6.93, average data length: 9.06
+        Clustering factor: 603272, ratio: 0.60
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 1
+            40 - 59% = 0
+            60 - 79% = 0
+            80 - 99% = 928
+
+    Index "IDX_TEST_UUID_V7S" (5)
+        Root page: 17062, depth: 3, leaf buckets: 1593, nodes: 1000000
+        Average node length: 25.70, total dup: 0, max dup: 0
+        Average key length: 22.75, compression ratio: 1.58
+        Average prefix length: 16.25, average data length: 19.75
+        Clustering factor: 603272, ratio: 0.60
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 1
+            40 - 59% = 0
+            60 - 79% = 0
+            80 - 99% = 1592
+
+    Index "IDX_TEST_UUID_V7_DESC" (7)
+        Root page: 20218, depth: 3, leaf buckets: 929, nodes: 1000000
+        Average node length: 15.01, total dup: 0, max dup: 0
+        Average key length: 12.06, compression ratio: 1.41
+        Average prefix length: 7.93, average data length: 9.06
+        Clustering factor: 603272, ratio: 0.60
+        Fill distribution:
+             0 - 19% = 0
+            20 - 39% = 1
+            40 - 59% = 0
+            60 - 79% = 0
+            80 - 99% = 928
+----
+
+Indizes vom Typ BIGINT sind am kompaktesten; ihre Tiefe beträgt 2, während sie bei UUID-Indizes 3 beträgt. Auch für Indizes auf einer BIGINT-Spalte ist der Clusterfaktor am besten, d. h. die Sortierung nach einem solchen Index ist am effizientesten, was durch die Tests bestätigt wird.
+
+Indizes auf binären UUID-Typen sind kompakter als Indizes, bei denen UUID in Zeichenform gespeichert wird. Indizes auf Spalten für UUID Version 7 benötigen 1,5-mal weniger Platz als UUID Version 4. Sie komprimieren besser mit Präfixkomprimierung und haben einen besseren Clusterfaktor.
+
+== Schlussfolgerung
+
+Firebird ermöglicht die Arbeit mit universellen eindeutigen Bezeichnern (UUIDs); es ist nicht erforderlich, einen neuen Typ zum Firebird-Kernel hinzuzufügen. Verwenden Sie zum Speichern von UUIDs den Datentyp `BINARY(16)`. Sie können eine Domain mit dem Namen `UUID` erstellen und sie bei der Definition von Tabellenspalten oder Parametern von gespeicherten Prozeduren verwenden. Eine UUID kann sowohl auf der Anwendungsseite als auch auf dem Firebird-Server generiert werden.
+
+Für die Generierung von UUIDs auf der Firebird-Seite wird die Funktion `GEN_UUID()` verwendet, die UUID Version 4 generiert. Indizes für UUID Version 7 sind kompakter als für Version 4 und teilweise nach der Zeit geordnet. Firebird 5.0 hat keine eingebauten Funktionen zur Generierung von UUID Version 7, aber Sie können solche Schlüssel auf der Anwendungsseite oder mit Hilfe einer externen Funktion generieren. In Firebird 6.0 können Sie die Funktion `GEN_UUID()` verwenden, um UUID Version 7 zu generieren.
+
+Um eine UUID in eine menschenlesbare Form umzuwandeln, können Sie die eingebaute Funktion `UUID_TO_CHAR()` verwenden. Um eine UUID aus der Zeichenform in die binäre Form umzuwandeln, können Sie die Funktion `CHAR_TO_UUID()` verwenden.

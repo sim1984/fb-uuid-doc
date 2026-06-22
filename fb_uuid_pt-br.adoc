@@ -1,7 +1,7 @@
 [[fb-uuid]]
 = Usando UUID no Firebird
 Denis Simonov
-v1.0 de 09.06.2026
+v1.1 de 22.06.2026
 :doctype: article
 :sectnums:
 :sectanchors:
@@ -120,7 +120,7 @@ CREATE TABLE T (
 Alguns usuários armazenam UUIDs em formato legível por humanos em colunas `CHAR(36) CHARACTER SET ASCII`. Deve-se notar que, nessa forma, um UUID ocupa 20 bytes a mais (isso não é tão significativo). Mas o maior problema está nos índices construídos sobre tais colunas – suas chaves ocupam significativamente mais espaço, o que pode levar a uma maior profundidade do índice. Portanto, recomendamos construir chaves e índices apenas em colunas UUID armazenadas em formato binário. Mais sobre indexação de UUID será escrito abaixo.
 ====
 
-== Gerando UUIDs
+== Gerando UUID versão 4
 
 A RFC 9562 define várias versões de UUID. Cada versão tem seus próprios requisitos para gerar novos valores UUID e tem suas próprias vantagens e desvantagens. Um UUID pode ser gerado tanto no lado da aplicação quanto no lado do SGBD.
 
@@ -157,6 +157,38 @@ END
 ====
 Infelizmente, não é permitido especificar a função `GEN_UUID()` como valor padrão para o campo `ID`.
 ====
+
+== Gerando UUID versão 7
+
+No Firebird 6.0, a função `GEN_UUID()` pode aceitar um parâmetro que especifica a versão do algoritmo de geração de UUID. Os valores de versão válidos são 4 e 7. Se o argumento não for fornecido, a versão 4 do UUID é gerada.
+
+No entanto, o Firebird 6.0 ainda está em desenvolvimento, e muitos usuários já desejam aproveitar as vantagens do UUID versão 7 nas versões atuais do Firebird 5.0, 4.0 ou 3.0. Para esses usuários, escrevemos uma função UDR que gera UUID versão 7.
+
+Esta biblioteca é gratuita e fornecida com o código-fonte: https://github.com/IBSurgeon/uuid_v7_udr
+
+Após instalar a UDR, execute o script para registrar a função UDR.
+
+[source,sql]
+----
+CREATE FUNCTION GEN_UUID_V7 ()
+RETURNS BINARY(16)
+EXTERNAL NAME 'uuid_v7!gen_uuid_v7'
+ENGINE UDR;
+----
+
+Agora você pode gerar UUID versão 7 no Firebird 5.0–3.0.
+
+[source,sql]
+----
+SELECT GEN_UUID_V7() AS UUID_V7 FROM RDB$DATABASE;
+----
+
+No Firebird 6.0, você pode gerar UUID versão 7 sem usar UDR.
+
+[source,sql]
+----
+SELECT GEN_UUID(7) AS UUID_V7 FROM RDB$DATABASE;
+----
 
 == Exibindo UUID em formato legível por humanos
 
