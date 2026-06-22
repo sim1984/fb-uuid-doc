@@ -14,3 +14,8 @@
 
 * PDF - [fb-uuid-pt-br.pdf](https://github.com/sim1984/fb-uuid-doc/releases/download/1.0/fb_uuid_pt-br.pdf)
 * HTML - [fb-uuid-pt-br-html.zip](https://github.com/sim1984/fb-uuid-doc/releases/download/1.0/fb_uuid_pt-br-html.zip)
+
+Статья доступна на немецком языке в форматах:
+
+* PDF - [fb-uuid-de.pdf](https://github.com/sim1984/fb-uuid-doc/releases/download/1.0/fb_uuid_de.pdf)
+* HTML - [fb-uuid-de-html.zip](https://github.com/sim1984/fb-uuid-doc/releases/download/1.0/fb_uuid_de-html.zip)
